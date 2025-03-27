@@ -1,0 +1,90 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <netinet/ip.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
+unsigned short calculate_checksum(unsigned short *paddress, int len) {
+    unsigned long sum = 0;
+    while (len > 1) {
+        sum += *paddress++;
+        len -= 2;
+    }
+    if (len > 0) {
+        sum += *(unsigned char *) paddress;
+    }
+
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return (unsigned short)(~sum);
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        printf("Usage: %s <number_of_packets>\n", argv[0]);
+        return 1;
+    }
+
+    int num_packets = atoi(argv[1]);
+    if (num_packets <= 0) {
+        printf("Invalid number of packets. Must be greater than 0.\n");
+        return 1;
+    }
+
+    int sock;
+    struct sockaddr_in target_addr;
+
+    sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+    if (sock < 0) {
+        perror("Error creating socket");
+        return 1;
+    }
+
+    int one = 1;
+    if (setsockopt(sock, IPPROTO_IP, IP_HDRINCL, &one, sizeof(one)) < 0) {
+        perror("Error setting IP_HDRINCL");
+        return 1;
+    }
+
+    char packet[4096];
+    struct iphdr *ip_header = (struct iphdr *) packet;
+
+    const char *data = "Hello from spoofed IP!";
+    int data_len = strlen(data);
+
+    target_addr.sin_family = AF_INET;
+    target_addr.sin_port = htons(8070);
+    target_addr.sin_addr.s_addr = inet_addr("172.24.128.1");
+
+    for (int i = 0; i < num_packets; i++) {
+        memset(packet, 0, sizeof(packet));
+
+        memcpy(packet + sizeof(struct iphdr), data, data_len);
+
+        ip_header->version = 4;  
+        ip_header->ihl = 5;      
+        ip_header->tos = 0;      
+        ip_header->tot_len = htons(sizeof(struct iphdr) + data_len);
+        ip_header->id = htons(54321 + i); 
+        ip_header->frag_off = 0;         
+        ip_header->ttl = 64;             
+        ip_header->protocol = IPPROTO_UDP;
+        ip_header->check = 0;  
+        ip_header->saddr = inet_addr("192.168.1.100"); 
+        ip_header->daddr = inet_addr("172.24.128.1");  
+
+        ip_header->check = calculate_checksum((unsigned short *) packet, sizeof(struct iphdr));
+
+        if (sendto(sock, packet, ntohs(ip_header->tot_len), 0, (struct sockaddr *)&target_addr, sizeof(target_addr)) < 0) {
+            perror("Error sending packet");
+        } else {
+            printf("Packet %d sent successfully to 172.24.128.1:8070\n", i + 1);
+        }
+    }
+
+    close(sock);
+    return 0;
+}
